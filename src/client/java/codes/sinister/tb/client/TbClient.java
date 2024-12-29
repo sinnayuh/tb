@@ -6,9 +6,13 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +30,11 @@ public class TbClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("Initializing Trigger Mod");
+        registerTickHandler();
+
+        // Register event handlers to track movement and attacks
+//        AttackEventHandler.registerAttackEvent();
+//        MovementEventHandler.registerMovementEvent();
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(ClientCommandManager.literal("tb")
@@ -75,31 +84,82 @@ public class TbClient implements ClientModInitializer {
         });
     }
 
+    private double getDistanceToBoundingBoxEdge(PlayerEntity player, Entity targetEntity) {
+        Box boundingBox = targetEntity.getBoundingBox();
+        Vec3d eyePos = player.getEyePos();
+
+        double clampedX = MathHelper.clamp(eyePos.x, boundingBox.minX, boundingBox.maxX);
+        double clampedY = MathHelper.clamp(eyePos.y, boundingBox.minY, boundingBox.maxY);
+        double clampedZ = MathHelper.clamp(eyePos.z, boundingBox.minZ, boundingBox.maxZ);
+
+        Vec3d closestPoint = new Vec3d(clampedX, clampedY, clampedZ);
+
+        return eyePos.squaredDistanceTo(closestPoint);
+    }
+
+    private int cooldownTicks = 0; // Number of ticks left for cooldown (20 ticks = 1 second)
+    private boolean hasLoggedCooldown = false; // Tracks if cooldown message has already been logged
+
     private void checkAndAttack() {
         if (!isTriggerActive || CLIENT.player == null || CLIENT.interactionManager == null) return;
+
         if (CLIENT.crosshairTarget instanceof EntityHitResult hitResult) {
-            if (hitResult.getEntity() instanceof PlayerEntity) {
-                float cooldown = CLIENT.player.getAttackCooldownProgress(0.0f);
-                long currentTime = System.currentTimeMillis();
-                if (cooldown >= 1.0f && currentTime - lastAttackTime >= 625) {
-
-                    CLIENT.interactionManager.attackEntity(CLIENT.player, hitResult.getEntity());
-                    CLIENT.player.swingHand(CLIENT.player.getActiveHand());
-
-                    lastAttackTime = currentTime;
-                    canAttack = false;
-
-                    new Thread(() -> {
-                        try {
-                            Thread.sleep(625);
-                            canAttack = true;
-                        } catch (InterruptedException e) {
-                            LOGGER.error("Attack cooldown interrupted", e);
-                        }
-                    }).start();
+            Entity targetEntity = hitResult.getEntity();
+            if (targetEntity instanceof PlayerEntity) {
+                // Immediately block further checks if cooldown is active
+                if (cooldownTicks > 0) {
+                    if (!hasLoggedCooldown) {
+                        LOGGER.info("Attack skipped due to active cooldown (ticks left: {}).", cooldownTicks);
+                        hasLoggedCooldown = true; // Log the message only once
+                    }
+                    return;
                 }
+
+                // Reset logging flag once cooldown expires
+                hasLoggedCooldown = false;
+
+                // Calculate distance to the bounding box edge
+                double distance = getDistanceToBoundingBoxEdge(CLIENT.player, targetEntity);
+                double maxReachSquared = 3.0 * 3.0; // Melee reach squared
+                if (distance > maxReachSquared) {
+                    LOGGER.warn("Target out of reach (distance: {}). Attack aborted.", Math.sqrt(distance));
+                    return;
+                }
+
+                // Ensure player is on stable ground
+                if (!CLIENT.player.isOnGround()) {
+                    LOGGER.info("Player not on stable ground. Attack skipped.");
+                    return;
+                }
+
+                // Check attack cooldown progress
+                float cooldown = CLIENT.player.getAttackCooldownProgress(0.0f);
+                if (cooldown < 1.0f) {
+                    LOGGER.info("Cooldown not met (progress: {}). Attack skipped.", cooldown);
+                    return;
+                }
+
+                // Perform attack
+                CLIENT.interactionManager.attackEntity(CLIENT.player, targetEntity);
+                CLIENT.player.swingHand(CLIENT.player.getActiveHand());
+                LOGGER.info("Attack successfully executed at distance {}.", Math.sqrt(distance));
+
+                // Immediately set cooldownTicks to start cooldown
+                cooldownTicks = 13; // ~625ms in ticks
             }
         }
+    }
+
+    // Tick event listener to decrement cooldown ticks
+    public void registerTickHandler() {
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (cooldownTicks > 0) {
+                cooldownTicks--; // Decrease cooldown each tick
+                if (cooldownTicks == 0) {
+                    LOGGER.info("Cooldown expired. Ready to attack.");
+                }
+            }
+        });
     }
 
     private void sendMessage(String message) {
