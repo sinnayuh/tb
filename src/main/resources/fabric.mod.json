@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "tb",
+  "version": "${version}",
+  "name": "tb",
+  "description": "A mod that adds a new dimension to the game.",
+  "authors": ["sin"],
+  "contact": {},
+  "license": "Apache-2.0",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "codes.sinister.tb.client.TbClient"
+    ],
+    "main": [
+      "codes.sinister.tb.Tb"
+    ]
+  },
+  "mixins": [
+    "tb.mixins.json",
+    {
+      "config": "tb.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.9",
+    "fabric-api": "*",
+    "java": ">=17",
+    "minecraft": "1.20.1"
+  }
+}
